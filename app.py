@@ -5,7 +5,7 @@ import logging
 import shutil
 import tempfile
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from typing import Dict, Any
 
 # Set up basic logging
@@ -25,11 +25,23 @@ def list_files():
         return jsonify({'error': str(e)}), 500
 
 @app.route("/foldseek", methods=["post"])
-def run_foldseek(query_pdb, n):
+def run_foldseek(): # The arguments are removed from the function signature
     """
     Performs the FoldSeek search.
     It writes the input PDB to a temporary file and executes the FoldSeek binary.
     """
+    # Check if the request contains JSON
+    if not request.is_json:
+        return jsonify({"error": "Request must be in JSON format"}), 400
+
+    data = request.get_json()
+    query_pdb = data.get("query_pdb")
+    n = data.get("n")
+
+    # Validate that both parameters were provided
+    if not query_pdb or n is None:
+        return jsonify({"error": "Missing 'query_pdb' or 'n' in request body"}), 400
+
     logger.info("Starting FoldSeek prediction...")
 
     # Create a temporary directory to avoid file collisions between requests
