@@ -30,24 +30,22 @@ def run_foldseek(): # The arguments are removed from the function signature
     Performs the FoldSeek search.
     It writes the input PDB to a temporary file and executes the FoldSeek binary.
     """
-    # Check if the request contains JSON
     if not request.is_json:
         return jsonify({"error": "Request must be in JSON format"}), 400
 
+    available_databases = ["afdb-sp", "afdb-up", "esmdb"]
     data = request.get_json()
     query_pdb = data.get("query_pdb")
-    n = data.get("n")
+    database = data.get("database")
 
-    # Validate that both parameters were provided
-    if not query_pdb or n is None:
-        return jsonify({"error": "Missing 'query_pdb' or 'n' in request body"}), 400
+    if not query_pdb or database is None:
+        return jsonify({"error": "Missing 'query_pdb' or 'database' in request body"}), 400
+    if database not in available_databases:
+        return jsonify({"error": f"Database is not an available database. Choose from {available_databases}"})
 
     logger.info("Starting FoldSeek prediction...")
 
-    # Create a temporary directory to avoid file collisions between requests
     temp_dir = tempfile.mkdtemp()
-
-    # Slight workaround cuz it's a binary lol
     try:
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".pdb", delete=True) as temp_pdb_file:
             # Define paths for temporary files
@@ -55,17 +53,21 @@ def run_foldseek(): # The arguments are removed from the function signature
             results_path = os.path.join(temp_dir, "results.tsv")
             tmp_work_path = os.path.join(temp_dir, "tmp")
 
-            # Write the input PDB string to the temporary file
             with open(query_pdb_path, "w") as f:
                 f.write(query_pdb)
 
-            # Construct the command-line arguments for FoldSeek
-            # This provides a standard, detailed TSV output
+            headers = [
+                "mismatch", "gapopen", "qstart", "qend", "tstart", "tend",
+                "evalue", "prob", "qlen", "tlen", "qaln", "taln",
+                "qseq", "tseq"
+            ]
+            if database != "esmdb":
+                headers.append("taxname")
             command = [
                 "foldseek",
                 "easy-search",
                 query_pdb_path,
-                "/home/ec2-user/databases/afdb",
+                f"/home/ec2-user/databases/{database}",
                 results_path,
                 tmp_work_path,
                 "--format-mode", "4",
@@ -75,7 +77,6 @@ def run_foldseek(): # The arguments are removed from the function signature
 
             logger.info(f"Running command: {' '.join(command)}")
 
-            # Execute the FoldSeek command
             process = subprocess.run(
                 command,
                 capture_output=True,
@@ -85,25 +86,26 @@ def run_foldseek(): # The arguments are removed from the function signature
 
             logger.info(f"FoldSeek stdout: {process.stdout}")
 
-            results = get_top_n_results(results_path, n)
-
-            # # Read the tab-separated result file
-            # with open(results_path, "r") as f:
-            #     results = f.read()
+            df = pd.read_csv(
+                results_path,
+                sep='\t',
+                names=headers,
+                header=None,
+                skip_blank_lines=True
+            )
+            csv_results = df.to_csv(index=False)
 
             logger.info("FoldSeek search completed successfully.")
-            return results
+            return jsonify({csv_results}), 200
 
     except subprocess.CalledProcessError as e:
-        # Log the specific error from FoldSeek if it fails
         logger.error(f"FoldSeek execution failed with exit code {e.returncode}")
-        print(f"FoldSeek execution failed with exit code {e.returncode}")
         logger.error(f"FoldSeek stderr: {e.stderr}")
-        print(f"FoldSeek stderr: {e.stderr}")
-        raise RuntimeError(f"FoldSeek execution failed: {e.stderr}")
+        error_code = jsonify({f"Foldseek stderr: {e.stderr}"}), 400
     finally:
-        # IMPORTANT: Clean up the temporary directory and its contents
         shutil.rmtree(temp_dir)
+    return error_code
+
 def get_top_n_results(tsv_path: str, top_n: int = 10) -> Dict[str, Any]:
     """
     Parse TSV results from Foldseek, sort by lowest evalue, and return top N results.
